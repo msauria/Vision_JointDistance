@@ -9,15 +9,15 @@ import sys
 
 import numpy
 
-import JointDistanceLib
+import JointDistanceLib1
 
 def main():
     parser = generate_parser()
     args = parser.parse_args()
     model = LinReg(args.rna, args.state, args.cre, args.genome, args.verbose)
     model.run(args.output, args.promoter_dist, args.cre_dist, args.unidir,
-              args.beta_iter, args.tad_iter, args.lessone, args.shuffle,
-              args.npy, args.rand, args.seed)
+              args.beta_iter, args.tad_iter, args.burnin_iter, args.lessone,
+              args.shuffle, args.npy, args.rand, args.seed)
 
 def generate_parser():
     """Generate an argument parser."""
@@ -39,6 +39,8 @@ def generate_parser():
                         help="Parameter refinement iterations")
     parser.add_argument('-t', '--tad-iter', dest="tad_iter", type=int, action='store', default=100,
                         help="TAD refinement iterations")
+    parser.add_argument('-b', '--burnin-iter', dest="burnin_iter", type=int, action='store', default=10,
+                        help="TAD burn-in refinement iterations")
     parser.add_argument('--promoter-dist', dest="promoter_dist", type=int, action='store',
                         help="If specified, learn betas for promoters up to promoter distance cutoff",
                         default=2500)
@@ -68,7 +70,7 @@ class LinReg(object):
         2: logging.INFO,
         3: logging.DEBUG,
     }
-    learning_rate = 0.0000002
+    learning_rate = 0.01
 
     def __init__(self, rna, state, cre, genomes, verbose=2):
         self.verbose = verbose
@@ -124,8 +126,8 @@ class LinReg(object):
         return None
 
     def run(self, out_prefix, promoter_dist=None, cre_dist=None, unidir=False,
-            beta_iter=20, tad_iter=100, lessone=None, shuffle=False, npy=False,
-            rand=False, seed=None):
+            beta_iter=20, tad_iter=100, burnin_iter=10, lessone=None,
+            shuffle=False, npy=False, rand=False, seed=None):
         self.out_prefix = os.path.abspath(out_prefix)
         self.promoter_dist = promoter_dist
         if self.promoter_dist == 0:
@@ -174,6 +176,7 @@ class LinReg(object):
 
         self.beta_iter = beta_iter
         self.tad_iter = tad_iter
+        self.burnin_iter = burnin_iter
         self.get_expression()
         self.initialize_parameters()
         self.refine_model()
@@ -257,23 +260,28 @@ class LinReg(object):
             bgradient = numpy.zeros((self.featureN, self.stateN),
                                     dtype=numpy.float64)
             agradient = numpy.zeros(1, dtype=numpy.float64)
-            for h in range(self.tad_iter):
+            for h in range(self.tad_iter + self.burnin_iter):
+                bi = h < self.burnin_iter
                 for i in range(self.beta_iter):
                     bgradient.fill(0)
                     agradient.fill(0)
                     for j in range(self.genomeN):
-                        self.data[j].update_parameters(self.betas,
-                                                       agradient, bgradient)
+                        self.data[j].update_parameters(self.betas, agradient,
+                                                       bgradient)
+                    bgradient /= self.expression.shape[0]
+                    agradient /= self.expression.shape[0]# * self.stateN
                     if h == 0:
-                        #self.alpha = numpy.minimum(-0.1, numpy.maximum(
-                        #    self.alpha + self.learning_rate *
-                        #    agradient * 0.1, -2))
+                        if not bi:
+                            self.alpha = numpy.minimum(-0.1, numpy.maximum(
+                                self.alpha + self.learning_rate *
+                                agradient * 0.1, -2))
                         self.betas[0, :, :] = numpy.minimum(20, numpy.maximum(
                             self.betas[0, :, :] + self.learning_rate *
                             bgradient * 0.1, -20))
                     else:
-                        #self.alpha = numpy.minimum(-0.1, numpy.maximum(
-                        #    self.alpha - self.learning_rate * agradient, -2))
+                        if not bi:
+                            self.alpha = numpy.minimum(-0.1, numpy.maximum(
+                                self.alpha - self.learning_rate * agradient, -2))
                         self.betas[0, :, :] = numpy.minimum(20, numpy.maximum(
                             self.betas[0, :, :] + self.learning_rate *
                             bgradient, -20))
@@ -281,11 +289,13 @@ class LinReg(object):
                         self.data[j].update_contactP(self.alpha)
                     self.get_predicted()
                     adjR2, lo_adjR2, MSE = self.find_adjR2()
-                    print(f"\r{' '*80}\rIteration: {h+1} ({i+1})  " + \
-                          f"adj-R2: {adjR2*100:.2f}%  " + \
-                          f"LO adj-R2: {lo_adjR2*100:.2f}%  " + \
-                          f"MSE:{MSE:,.2f}", end='', file=sys.stderr)
-                print(f"\r{' '*80}\r", end='', file=sys.stderr)
+                    if self.verbose >= 2:
+                        print(f"\r{' '*80}\rIteration: {h+1} ({i+1})  " + \
+                              f"adj-R2: {adjR2*100:.2f}%  " + \
+                              f"LO adj-R2: {lo_adjR2*100:.2f}%  " + \
+                              f"MSE:{MSE:,.2f}", end='', file=sys.stderr)
+                if self.verbose >= 2:
+                    print(f"\r{' '*80}\r", end='', file=sys.stderr)
                 self.logger.info(f"Iteration: {h+0.5}  " + \
                                  f"adj-R2: {adjR2*100:.2f}%  " + \
                                  f"LO adj-R2: {lo_adjR2*100:.2f}%  " + \
@@ -570,7 +580,7 @@ class GenomeData(object):
         for i, chrom in enumerate(self.chroms):
             self.rna_indices[i + 1] = (self.rna_indices[i]
                                        + numpy.where(self.rna['chr'] == chrom)[0].shape[0])
-        self.tssN = self.rna.shape[0]
+        self.tssN = self.rna.shape[0]        
         if self.verbose >= 2:
             print("\r%s\r" % (' ' * 80), end='', file=sys.stderr)
         self.logger.info('Loaded {} expression profiles across {} {} celltypes ({} replicates)'.format(
@@ -718,13 +728,17 @@ class GenomeData(object):
             print(f"\r{' '*80}\rAssign states to {self.genome} promoters",
                   end='', file=sys.stderr)
         if self.unidir:
+            self.strand = numpy.zeros(self.tssN, dtype=numpy.int32)
             where = numpy.where(self.rna['strand'] == False)[0]
+            self.strand[where] = 1
             self.rna['start'][where] = self.rna['TSS'][where] - self.promoter_dist
             self.rna['end'][where] = self.rna['TSS'][where]
             where = numpy.where(self.rna['strand'] == True)[0]
+            self.strand[where] = -1
             self.rna['start'][where] = self.rna['TSS'][where]
             self.rna['end'][where] = self.rna['TSS'][where] - self.promoter_dist
         else:
+            self.strand = None
             self.rna['start'] = self.rna['TSS'] - self.promoter_dist
             self.rna['end'] = self.rna['TSS'] + self.promoter_dist
         # Find ranges of states for each CRE
@@ -955,10 +969,13 @@ class GenomeData(object):
         cBetas = numpy.zeros((self.creN, self.cellN), dtype=numpy.float64)
         tss_list = numpy.zeros(self.max_tss, dtype=numpy.int32)
         cre_list = numpy.zeros(self.max_cre, dtype=numpy.int32)
-        JointDistanceLib.predicted(
+        tss_coords = numpy.zeros(self.max_tss, dtype=numpy.int32)
+        cre_coords = numpy.zeros(self.max_cre, dtype=numpy.int32)
+        JointDistanceLib1.predicted(
             self.tads,
             self.EP,
             self.rna['rna'],
+            self.strand,
             pfeatures,
             self.cre['state'],
             self.cre_ranges,
@@ -966,8 +983,11 @@ class GenomeData(object):
             betas,
             tss_list,
             cre_list,
+            tss_coords,
+            cre_coords,
             cBetas,
-            predicted)
+            predicted,
+            self.promoter_dist)
         return predicted
 
     def update_parameters(self, betas, agradient, bgradient):
@@ -975,15 +995,18 @@ class GenomeData(object):
         dC_dP = numpy.zeros(self.cellN, dtype=numpy.float64)
         tss_list = numpy.zeros(self.max_tss, dtype=numpy.int32)
         cre_list = numpy.zeros(self.max_cre, dtype=numpy.int32)
+        tss_coords = numpy.zeros(self.max_tss, dtype=numpy.int32)
+        cre_coords = numpy.zeros(self.max_cre, dtype=numpy.int32)
         if self.use_promoters:
             pfeatures = self.pfeatures[:, self.lo_mask, :]
         else:
             pfeatures = None
         tss = numpy.where(self.EP[:, 1] == 1)[0].astype(numpy.int32)
-        JointDistanceLib.gradient(
+        JointDistanceLib1.gradient(
             self.tads,
             self.EP,
             self.rna['rna'][:, self.lo_mask],
+            self.strand,
             pfeatures,
             self.cre['state'][:, self.lo_mask, :],
             self.cre_ranges,
@@ -993,10 +1016,13 @@ class GenomeData(object):
             betas,
             tss_list,
             cre_list,
+            tss_coords,
+            cre_coords,
             agradient,
             bgradient,
             predicted,
-            dC_dP)
+            dC_dP,
+            self.promoter_dist)
 
     def update_TADs(self, betas):
         prev_tads = set()
@@ -1004,6 +1030,8 @@ class GenomeData(object):
             prev_tads.add((s, e))
         tss_list = numpy.zeros(self.max_tss, dtype=numpy.int32)
         cre_list = numpy.zeros(self.max_cre, dtype=numpy.int32)
+        tss_coords = numpy.zeros(self.max_tss, dtype=numpy.int32)
+        cre_coords = numpy.zeros(self.max_cre, dtype=numpy.int32)
         TSSs = numpy.where(self.EP[:, 1])[0]
         self.tads = numpy.zeros((TSSs.shape[0], 2), dtype=numpy.int32)
         self.tads[:, 0] = TSSs
@@ -1032,9 +1060,10 @@ class GenomeData(object):
             paths = numpy.zeros(EP.shape[0] + 1, dtype=numpy.int32)
             scores = numpy.zeros(EP.shape[0] + 1, dtype=numpy.float64)
             tads = numpy.zeros((rna.shape[0], 2), dtype=numpy.int32)
-            tadN = JointDistanceLib.find_tads(
+            tadN = JointDistanceLib1.find_tads(
                 EP,
                 rna,
+                self.strand,
                 cfeatures,
                 cre_ranges,
                 contactP,
@@ -1046,10 +1075,12 @@ class GenomeData(object):
                 inTad_cres,
                 tss_list,
                 cre_list,
+                tss_coords,
+                cre_coords,
                 paths,
                 scores,
-                tads)
-            #print(f"  {i} {numpy.amax(scores[(tss[-1] + 1):])} {scores[tads[0, 1]]}", file=sys.stderr)
+                tads,
+                self.promoter_dist)
             self.tads.append(tads[:tadN, :] + es)
             mse += scores[tads[0, 1]]
         self.tads = numpy.concatenate(self.tads, axis=0)
@@ -1073,10 +1104,10 @@ class GenomeData(object):
             else:
                 start = self.cre['start'][self.EP[ts, 0]] - 1
                 chrom = self.cre['chr'][self.EP[ts, 0]]
-            if self.EP[te, 1] == 1:
-                end = self.rna['TSS'][self.EP[te, 0]] + 1
+            if self.EP[te - 1, 1] == 1:
+                end = self.rna['TSS'][self.EP[ - 1, 0]] + 1
             else:
-                end = self.cre['end'][self.EP[te, 0]] + 1
+                end = self.cre['end'][self.EP[te - 1, 0]] + 1
             print(f"{chrom}\t{start}\t{end}", file=output)
         output.close()
 
@@ -1107,9 +1138,14 @@ class GenomeData(object):
         pairN = 0
         for i in range(self.tadN):
             ts, te = self.tads[i, :]
-            tss = numpy.where(self.EP[ts:te, 1] == 1)[0].shape[0]
-            cre = numpy.where(self.EP[ts:te, 1] == 0)[0].shape[0]
-            pairN += tss * cre
+            tss = numpy.where(self.EP[ts:te, 1] == 1)[0] + ts
+            cre = numpy.where(self.EP[ts:te, 1] == 0)[0] + ts
+            dists = self.EP[tss, 2].reshape(1, -1) - self.EP[cre, 2].reshape(-1, 1)
+            if self.strand is None:
+                pairN += numpy.where(numpy.abs(dists) >= self.promoter_dist)[0].shape[0]
+            else:
+                pairN += numpy.where(dists * self.strand[self.EP[tss, 0]] >=
+                                     self.promoter_dist)[0].shape[0]
         if self.use_promoters:
             pairN += self.tssN
         indices = numpy.zeros((pairN, 2), dtype=numpy.int32)
@@ -1117,14 +1153,17 @@ class GenomeData(object):
         cBetas = numpy.zeros((self.creN, self.cellN), dtype=numpy.float64)
         tss_list = numpy.zeros(self.max_tss, dtype=numpy.int32)
         cre_list = numpy.zeros(self.max_cre, dtype=numpy.int32)
+        tss_coords = numpy.zeros(self.max_tss, dtype=numpy.int32)
+        cre_coords = numpy.zeros(self.max_cre, dtype=numpy.int32)
         if self.use_promoters:
             pfeatures = self.pfeatures
             pBetas = numpy.zeros((self.tssN, self.cellN), dtype=numpy.float64)
         else:
             pfeatures = None
             pBetas = None
-        JointDistanceLib.find_erps(
+        JointDistanceLib1.find_erps(
             self.EP,
+            self.strand,
             self.cre['state'],
             pfeatures,
             self.cre_ranges,
@@ -1135,8 +1174,11 @@ class GenomeData(object):
             pBetas,
             tss_list,
             cre_list,
+            tss_coords,
+            cre_coords,
             erps,
-            indices)
+            indices,
+            self.promoter_dist)
         dtypes = [('chr', self.rna['chr'].dtype),
                   ('TSS', numpy.int32),
                   ('cre-start', numpy.int32),

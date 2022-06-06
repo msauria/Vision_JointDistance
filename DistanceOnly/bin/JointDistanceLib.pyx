@@ -32,6 +32,7 @@ def predicted(
         np.ndarray[DTYPE_int_t, ndim=2] tads not None,
         np.ndarray[DTYPE_int_t, ndim=2] EP not None,
         np.ndarray[DTYPE_64_t, ndim=2] rna not None,
+        np.ndarray[DTYPE_int_t, ndim=1] strand,
         np.ndarray[DTYPE_64_t, ndim=3] pfeatures,
         np.ndarray[DTYPE_64_t, ndim=3] cfeatures not None,
         np.ndarray[DTYPE_int_t, ndim=2] cre_ranges not None,
@@ -39,8 +40,11 @@ def predicted(
         np.ndarray[DTYPE_64_t, ndim=3] betas not None,
         np.ndarray[DTYPE_int_t, ndim=1] tss_list not None,
         np.ndarray[DTYPE_int_t, ndim=1] cre_list not None,
+        np.ndarray[DTYPE_int_t, ndim=1] tss_coords not None,
+        np.ndarray[DTYPE_int_t, ndim=1] cre_coords not None,
         np.ndarray[DTYPE_64_t, ndim=2] cBetas not None,
-        np.ndarray[DTYPE_64_t, ndim=2] predicted not None):
+        np.ndarray[DTYPE_64_t, ndim=2] predicted not None,
+        int prom_dist):
     cdef long long int featureN = betas.shape[1]
     cdef long long int stateN = betas.shape[2]
     cdef long long int tssN = rna.shape[0]
@@ -48,7 +52,7 @@ def predicted(
     cdef long long int creN = cfeatures.shape[0]
     cdef long long int tadN = tads.shape[0]
     cdef long long int cre_feat = featureN - 1
-    cdef int tss_listN, cre_listN, i, j, k, l, tss_index, ce, cs
+    cdef int tss_listN, cre_listN, i, j, k, l, tss_index, ce, cs, tss_coord, cre_coord
     cdef double cp
     # I=tssN, N=cellN, M=stateN, K=creN
     # C = sum_I( sum_N( O_in - P_in)^2 ) )
@@ -71,17 +75,26 @@ def predicted(
             for j in range(tads[i, 0], tads[i, 1]):
                 if EP[j, 1] == 1:
                     tss_list[tss_listN] = EP[j, 0]
+                    tss_coords[tss_listN] = EP[j, 2]
                     tss_listN += 1
                 else:
                     cre_list[cre_listN] = EP[j, 0]
+                    cre_coords[cre_listN] = EP[j, 2]
                     cre_listN += 1
             cre_listN -= 1
             for j in range(tss_listN):
                 tss_index = tss_list[j]
+                tss_coord = tss_coords[j]
                 cs = cre_ranges[tss_index, 0]
                 ce = cre_ranges[tss_index, 1]
                 if cre_listN >= 0:
                     for k in range(cre_list[0], cre_list[cre_listN] + 1):
+                        cre_coord = cre_coords[k - cre_list[0]]
+                        if strand is None:
+                            if abs(tss_coord - cre_coord) < prom_dist:
+                                continue
+                        elif strand[tss_index] * (tss_coord - cre_coord) < prom_dist:
+                            continue
                         cp = contactP[tss_index, k - cs]
                         for l in range(cellN):
                             predicted[tss_index, l] += cp * cBetas[k, l]
@@ -94,6 +107,7 @@ def gradient(
         np.ndarray[DTYPE_int_t, ndim=2] tads not None,
         np.ndarray[DTYPE_int_t, ndim=2] EP not None,
         np.ndarray[DTYPE_64_t, ndim=2] rna not None,
+        np.ndarray[DTYPE_int_t, ndim=1] strand,
         np.ndarray[DTYPE_64_t, ndim=3] pfeatures,
         np.ndarray[DTYPE_64_t, ndim=3] cfeatures not None,
         np.ndarray[DTYPE_int_t, ndim=2] cre_ranges not None,
@@ -103,10 +117,13 @@ def gradient(
         np.ndarray[DTYPE_64_t, ndim=3] betas not None,
         np.ndarray[DTYPE_int_t, ndim=1] tss_list not None,
         np.ndarray[DTYPE_int_t, ndim=1] cre_list not None,
+        np.ndarray[DTYPE_int_t, ndim=1] tss_coords not None,
+        np.ndarray[DTYPE_int_t, ndim=1] cre_coords not None,
         np.ndarray[DTYPE_64_t, ndim=1] agradient not None,
         np.ndarray[DTYPE_64_t, ndim=2] bgradient not None,
         np.ndarray[DTYPE_64_t, ndim=2] predicted not None,
-        np.ndarray[DTYPE_64_t, ndim=1] dC_dP not None):
+        np.ndarray[DTYPE_64_t, ndim=1] dC_dP not None,
+        int prom_dist):
     cdef long long int featureN = betas.shape[1]
     cdef long long int stateN = betas.shape[2]
     cdef long long int tssN = tss.shape[0]
@@ -115,7 +132,7 @@ def gradient(
     cdef long long int maxTSS = tss_list.shape[0]
     cdef long long int tadN = tads.shape[0]
     cdef long long int cre_feat = betas.shape[1] - 1
-    cdef int tss_listN, cre_listN, i, j, k, l, m, tss_index, cs
+    cdef int tss_listN, cre_listN, i, j, k, l, m, tss_index, cs, tss_coord, cre_coord
     cdef double cp, cf, b, lnD
     # I=tssN, N=cellN, M=stateN, K=creN
     # C = sum_I( sum_N( O_in - P_in)^2 ) )
@@ -131,18 +148,27 @@ def gradient(
             for j in range(tads[i, 0], tads[i, 1]):
                 if EP[j, 1] == 1:
                     tss_list[tss_listN] = EP[j, 0]
+                    tss_coords[tss_listN] = EP[j, 2]
                     tss_listN += 1
                 else:
                     cre_list[cre_listN] = EP[j, 0]
+                    cre_coords[cre_listN] = EP[j, 2]
                     cre_listN += 1
             cre_listN -= 1
             for j in range(tss_listN):
                 tss_index = tss_list[j]
+                tss_coord = tss_coords[j]
                 cs = cre_ranges[tss_index, 0]
                 for  m in range(cellN):
                     dC_dP[m] = 2 * (predicted[tss_index, m] - rna[tss_index, m])
                 if cre_listN >= 0:
                     for k in range(cre_list[0] - cs, cre_list[cre_listN] + 1 - cs):
+                        cre_coord = cre_coords[k - cre_list[0]]
+                        if strand is None:
+                            if abs(tss_coord - cre_coord) < prom_dist:
+                                continue
+                        elif strand[tss_index] * (tss_coord - cre_coord) < prom_dist:
+                            continue
                         lnD = EP_distance[tss_index, k, 1]
                         cp = contactP[tss_index, k]
                         for l in range(stateN):
@@ -164,6 +190,7 @@ def gradient(
 def find_tads(
         np.ndarray[DTYPE_int_t, ndim=2] EP not None,
         np.ndarray[DTYPE_64_t, ndim=2] rna not None,
+        np.ndarray[DTYPE_int_t, ndim=1] strand,
         np.ndarray[DTYPE_64_t, ndim=3] cfeatures not None,
         np.ndarray[DTYPE_int_t, ndim=2] cre_ranges not None,
         np.ndarray[DTYPE_64_t, ndim=2] contactP not None,
@@ -175,9 +202,12 @@ def find_tads(
         np.ndarray[DTYPE_64_t, ndim=3] inTad_cres not None,
         np.ndarray[DTYPE_int_t, ndim=1] tss_list not None,
         np.ndarray[DTYPE_int_t, ndim=1] cre_list not None,
+        np.ndarray[DTYPE_int_t, ndim=1] tss_coords not None,
+        np.ndarray[DTYPE_int_t, ndim=1] cre_coords not None,
         np.ndarray[DTYPE_int_t, ndim=1] paths not None,
         np.ndarray[DTYPE_64_t, ndim=1] scores not None,
-        np.ndarray[DTYPE_int_t, ndim=2] tads not None):
+        np.ndarray[DTYPE_int_t, ndim=2] tads not None,
+        int prom_dist):
     cdef long long int featureN = betas.shape[1]
     cdef long long int stateN = betas.shape[2]
     cdef long long int tssN = tss.shape[0]
@@ -189,6 +219,7 @@ def find_tads(
     cdef long long int cre_feat = featureN - 1
     cdef long long int tss_listN, cre_listN, i, j, k, l, m, n, p, tss_i, prev_best_path
     cdef long long int tss_index, cre_index, inv_j, start, end, tadN, cs, ce
+    cdef int cre_coord, tss_coord
     cdef double mse, cp, prev_best_score
     # I=tssN, N=cellN, M=stateN, K=creN
     # C = sum_I( sum_N( (O_in - P_in)^2 ) ) )
@@ -236,7 +267,9 @@ def find_tads(
                         prev_best_score = Inf
                         # If the next feature is a TSS, add to the tss list
                         tss_index = EP[k, 0]
+                        tss_coord = EP[k, 2]
                         tss_list[tss_listN] = tss_index
+                        tss_coords[tss_listN] = tss_coord
                         # Initialize the predicted expression
                         for m in range(cellN):
                             tad_pred[tss_listN, m] = predicted[tss_index, m]
@@ -246,15 +279,29 @@ def find_tads(
                         if cre_listN > 0:
                             for l in range(cre_list[0],
                                            cre_list[cre_listN - 1] + 1):
+                                cre_coord = cre_coords[l - cre_list[0]]
+                                if strand is None:
+                                     if abs(tss_coord - cre_coord) < prom_dist:
+                                        continue
+                                elif strand[tss_index] * (tss_coord - cre_coord) < prom_dist:
+                                    continue
                                 for m in range(cellN):
                                     tad_pred[tss_listN, m] += (
                                         inTad_cres[tss_index, m, l - cs])
                         tss_listN += 1
                     else:
                         cre_index = EP[k, 0]
+                        cre_coord = EP[k, 2]
                         cre_list[cre_listN] = cre_index
+                        cre_coords[cre_listN] = cre_coord
                         for l in range(tss_listN):
                             tss_index = tss_list[l]
+                            tss_coord = tss_coords[l]
+                            if strand is None:
+                                if abs(tss_coord - cre_coord) < prom_dist:
+                                    continue
+                            elif strand[tss_index] * (tss_coord - cre_coord) < prom_dist:
+                                continue
                             cs = cre_index - cre_ranges[tss_index, 0]
                             for m in range(cellN):
                                 tad_pred[l, m] += (
@@ -302,6 +349,7 @@ def find_tads(
 @cython.cdivision(True)
 def find_erps(
         np.ndarray[DTYPE_int_t, ndim=2] EP not None,
+        np.ndarray[DTYPE_int_t, ndim=1] strand,
         np.ndarray[DTYPE_64_t, ndim=3] cfeatures not None,
         np.ndarray[DTYPE_64_t, ndim=3] pfeatures,
         np.ndarray[DTYPE_int_t, ndim=2] cre_ranges not None,
@@ -312,8 +360,11 @@ def find_erps(
         np.ndarray[DTYPE_64_t, ndim=2] pBetas,
         np.ndarray[DTYPE_int_t, ndim=1] tss_list not None,
         np.ndarray[DTYPE_int_t, ndim=1] cre_list not None,
+        np.ndarray[DTYPE_int_t, ndim=1] tss_coords not None,
+        np.ndarray[DTYPE_int_t, ndim=1] cre_coords not None,
         np.ndarray[DTYPE_64_t, ndim=2] erps not None,
-        np.ndarray[DTYPE_int_t, ndim=2] indices not None):
+        np.ndarray[DTYPE_int_t, ndim=2] indices not None,
+        int prom_dist):
     cdef long long int featureN = betas.shape[1]
     cdef long long int stateN = betas.shape[2]
     cdef long long int cellN = erps.shape[1]
@@ -322,8 +373,11 @@ def find_erps(
     cdef long long int tadN = tads.shape[0]
     cdef long long int tss_listN, cre_listN, i, j, k, l, tssN
     cdef long long int tss_index, cre_index, cs, ts, te, pos
+    cdef int cre_coord, tss_coord
     if pfeatures is not None:
         tssN = pBetas.shape[0]
+    else:
+        tssN = 0
     cdef double mse, cp, prev_best_score
     with nogil:
         for i in range(creN):
@@ -346,12 +400,15 @@ def find_erps(
             for j in range(ts, te):
                 if EP[j, 1] == 1:
                     tss_list[tss_listN] = EP[j, 0]
+                    tss_coords[tss_listN] = EP[j, 2]
                     tss_listN += 1
                 else:
                     cre_list[cre_listN] = EP[j, 0]
+                    cre_coords[cre_listN] = EP[j, 2]
                     cre_listN += 1
             for j in range(tss_listN):
                 tss_index = tss_list[j]
+                tss_coord = tss_coords[j]
                 cs = cre_ranges[tss_index, 0]
                 if pfeatures is not None:
                     for l in range(cellN):
@@ -360,6 +417,12 @@ def find_erps(
                     indices[pos, 1] = -1
                     pos += 1
                 for k in range(cre_listN):
+                    cre_coord = cre_coords[k]
+                    if strand is None:
+                        if abs(tss_coord - cre_coord) < prom_dist:
+                            continue
+                    elif strand[tss_index] * (tss_coord - cre_coord) < prom_dist:
+                        continue
                     cre_index = cre_list[k]
                     cp = contactP[tss_index, cre_index - cs]
                     for l in range(cellN):
